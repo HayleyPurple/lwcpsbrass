@@ -1,0 +1,91 @@
+import streamlit as st
+import pandas as pd
+
+# 頁面基本設定
+st.set_page_config(page_title="銅管樂資料查詢系統", page_icon="🎺", layout="wide")
+st.title("🎺 銅管樂隊資料查詢系統")
+
+EXCEL_FILE = "2627 Brass 名單及日期_9月16日update.xlsx"
+
+@st.cache_data
+def load_and_clean_data(file_path):
+    sheet_names = ["星期一名單", "星期五名單", "星期五Ensemble名單"]
+    combined_data = []
+
+    for sheet in sheet_names:
+        try:
+            df = pd.read_excel(file_path, sheet_name=sheet)
+            df['上課分頁'] = sheet
+            # 將所有欄位名稱轉為字串並去除空白
+            df.columns = [str(col).strip() for col in df.columns]
+            combined_data.append(df)
+        except Exception as e:
+            st.error(f"讀取分頁【{sheet}】失敗，請檢查檔案名稱與結構：{e}")
+
+    if not combined_data:
+        return pd.DataFrame()
+
+    df_all = pd.concat(combined_data, ignore_index=True)
+
+    # 1. 自動剔除「退學」及「退出」學生
+    status_cols = [c for c in df_all.columns if any(k in c for k in ['狀態', '備註', '退出', '退學', 'Status'])]
+    for col in status_cols:
+        df_all = df_all[~df_all[col].astype(str).str.contains('退學|退出', regex=True, na=False)]
+
+    return df_all
+
+# 載入資料
+try:
+    df = load_and_clean_data(EXCEL_FILE)
+except Exception as e:
+    st.error(f"找不到 Excel 檔案，請確定檔案名稱為 `{EXCEL_FILE}` 並放置於同目錄下。")
+    st.stop()
+
+# 選單分頁
+tab1, tab2 = st.tabs(["🎺 按樂器組別 / 課程查詢", "🔍 按學生資料查詢"])
+
+# ----------------------------------------------------
+# 功能一：按樂器組別查詢
+# ----------------------------------------------------
+with tab1:
+    st.subheader("按樂器組別或課程檢視")
+    
+    # 識別組別欄位
+    group_col = next((c for c in df.columns if any(k in c for k in ['組別', '樂器', '班別名稱', '項目'])), None)
+    
+    if group_col:
+        groups = df[group_col].dropna().unique().tolist()
+        selected_group = st.selectbox("請選擇樂器組別 / 項目：", groups)
+        
+        filtered_df = df[df[group_col] == selected_group]
+        
+        # 顯示該組別的上課時間與地點資訊（自動抓取相關欄位）
+        info_cols = [c for c in df.columns if any(k in c for k in ['星期', '時間', '地點', '室', 'Time', 'Venue', '上課分頁'])]
+        if info_cols:
+            st.markdown("**📌 該組別上課資訊：**")
+            info_summary = filtered_df[info_cols].drop_duplicates()
+            st.dataframe(info_summary, hide_index=True)
+
+        st.markdown(f"**👥 成員名單 (共 {len(filtered_df)} 人)：**")
+        st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+    else:
+        st.warning("未能在 Excel 中自動辨識「樂器組別」欄位，請檢查標題命名。")
+
+# ----------------------------------------------------
+# 功能二：按班別 / 學號 / 姓名查詢
+# ----------------------------------------------------
+with tab2:
+    st.subheader("搜尋學生所屬銅管樂組別")
+    
+    search_keyword = st.text_input("輸入學生姓名、班別或學號進行搜尋：", "")
+    
+    if search_keyword.strip():
+        # 對所有文字欄位進行模糊比對
+        mask = df.astype(str).apply(lambda row: row.str.contains(search_keyword, case=False, na=False)).any(axis=1)
+        search_results = df[mask]
+        
+        if not search_results.empty:
+            st.success(f"找到 {len(search_results)} 筆相關紀錄：")
+            st.dataframe(search_results, use_container_width=True, hide_index=True)
+        else:
+            st.warning("未找到匹配的學生資料（可能已退學/退出，或輸入內容有誤）。")
